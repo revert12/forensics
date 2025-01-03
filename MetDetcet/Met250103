@@ -1,0 +1,148 @@
+#!/usr/bin/python3
+
+import json, csv
+import http.client as httplib
+import ssl, time
+from functools import reduce
+from datetime import datetime
+import requests
+
+ssl._create_default_https_context = ssl._create_unverified_context
+
+global conn, writer, token
+serverHost = '127.0.0.1'
+serverPort = 8000
+id = "admin"
+pw = "admin"
+
+def get_uk_current_time():
+    uk_timezone = pytz.timezone('Europe/London')
+    current_time = datetime.now(uk_timezone)
+    current_time_utc = current_time.astimezone(pytz.utc)
+    return current_time_utc.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+
+def createCSV():
+    global f, writer
+    fieldnames = ['id', 'speed', 'CPU', 'GPU', 'timestamp']
+    now = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    print("MetDetect_"+now+".csv")
+    f = open("MetDetect_"+now+".csv", "w", newline='')
+    writer = csv.DictWriter(f, fieldnames=fieldnames)
+    writer.writeheader()
+
+def send_video_data():
+    global conn
+    start_time = get_uk_current_time()
+    video_file_name = ['./1280x720_15fps.mp4']
+    mode='1'
+    endpoint = "/v1/extractor/add/channel"
+    
+    # 요청 데이터
+    payload = {
+        'name': video_file_name,
+        'start_time': start_time,
+        'vca_license_codes': '6535',
+        'forensic_license_codes': '6537',
+        'mode': mode,
+    }
+    
+    # 헤더 설정
+    headers = {
+        'Content-Type': 'application/json',  # JSON 형식으로 데이터를 전송
+        'Connection': 'keep-alive',
+    }
+    
+    # 비디오 파일 열기
+    with open(video_file_name, 'rb') as video_file:
+        # 파일을 base64로 인코딩하여 전송할 수 있지만, 여기선 간단히 파일 데이터를 전송하는 방식 사용
+        video_data = video_file.read()
+        # POST 요청 보내기 (여기선 직접 POST 방식으로 전송)
+        conn = httplib.HTTPSConnection(serverHost, serverPort)
+        
+        conn.request("POST", endpoint, json.dumps(payload), headers=headers)
+        response = conn.getresponse()
+        data = response.read()
+        
+        return json.loads(data)['id']
+
+def login():
+    global conn
+    endpoint = "/v1/auth/login"
+    payload = {
+        "id": id,
+        "pw": pw
+    }
+    headers = {
+        "Content-Type": "application/json",
+        'Connection': 'keep-alive',
+    }
+    print("endpoint: ", endpoint)
+    conn = httplib.HTTPSConnection(serverHost, serverPort)
+    conn.request("POST", endpoint, json.dumps(payload), headers)
+    response = conn.getresponse()
+    data = response.read()
+    print(json.loads(data)['token'])
+    # response = requests.post(url, headers=headers, data=json.dumps(payload))
+    return json.loads(data)['token']
+
+def requestHeader():
+    global token
+    return {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer "+token
+    }
+
+def request(endpoint):
+    global conn
+    headers = requestHeader()
+    conn.request("GET", endpoint, headers=headers)
+    response = conn.getresponse()
+    data = response.read()
+    return json.loads(data)
+
+
+def getMetDetectInfo():
+    global token, conn
+    endpoint = "/v1/extractor/info"
+    data = request(endpoint)
+    return data
+
+def getHWResource():
+    global token, conn
+    endpoint = "/v1/settings/general/resources"
+    data = request(endpoint)
+    cpuTotal = data['cpu']['total']
+    gpuTotal = data['gpu'][0]['usage']
+    return [cpuTotal, gpuTotal]
+
+def intervalRequest():
+    global token, conn, writer
+    count = 0
+
+    while True:
+        conn = httplib.HTTPSConnection(serverHost, serverPort)
+        
+        metDetectInfo = getMetDetectInfo()
+        [cpuTotal,gpuTotal] = getHWResource()
+        # reduce function to sum all speed in metDetectInfo
+        videoid = upload_video_data()
+        totalSpeed = reduce(lambda x,y: x+y, [x['speed'] for x in metDetectInfo])
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        print("---------------------------------"+str(count)+"---------------------------------")
+        print("timestamp: ", timestamp)
+        print("totalSpeed: ", totalSpeed)
+        print("cpuTotal: ", cpuTotal)
+        print("gpuTotal: ", gpuTotal)
+        writer.writerow({'id': videoid, 'speed': totalSpeed, 'CPU': cpuTotal, 'GPU': gpuTotal, 'timestamp': timestamp})
+        count+=1
+        time.sleep(5)
+
+
+def main():
+    global token
+    createCSV()
+    token = login()
+    intervalRequest()
+
+if __name__ == "__main__":
+    main()
